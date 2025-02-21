@@ -1,0 +1,238 @@
+/*  WiFi softAP Example
+
+   This example code is in the Public Domain (or CC0 licensed, at your option.)
+
+   Unless required by applicable law or agreed to in writing, this
+   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+   CONDITIONS OF ANY KIND, either express or implied.
+*/
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_mac.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include <stdio.h>
+#include "esp_http_server.h"
+#include "driver/gpio.h"
+
+#include "lwip/err.h"
+#include "lwip/sys.h"
+
+/* The examples use WiFi configuration that you can set via project configuration menu.
+
+   If you'd rather not, just change the below entries to strings with
+   the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
+*/
+#define EXAMPLE_ESP_WIFI_SSID      CONFIG_ESP_WIFI_SSID
+#define EXAMPLE_ESP_WIFI_PASS      CONFIG_ESP_WIFI_PASSWORD
+#define EXAMPLE_ESP_WIFI_CHANNEL   CONFIG_ESP_WIFI_CHANNEL
+#define EXAMPLE_MAX_STA_CONN       CONFIG_ESP_MAX_STA_CONN
+
+static const char *TAG = "wifi softAP";
+
+// Username and Password for authentication
+#define USERNAME  "admin"
+#define PASSWORD  "esp32pass"
+
+
+#define STORAGE_NAMESPACE "attendance"
+
+//static const char *TAG = "Attendance_Server";
+
+static const char* login_page = "<html>\
+    <head><title>Login</title></head>\
+    <body>\
+        <h2>Login Page</h2>\
+        <form action='/login' method='post'>\
+            Username: <input type='text' name='username'><br>\
+            Password: <input type='password' name='password'><br>\
+            <button type='submit'>Login</button>\
+        </form>\
+    </body>\
+</html>";
+static const char* attendance_page = "<html>\
+    <head><title>Mark Attendance</title></head>\
+    <body>\
+        <h2>Mark Your Attendance</h2>\
+        <form action='/mark' method='post'>\
+            Name: <input type='text' name='name'><br>\
+            <button type='submit'>Mark Attendance</button>\
+        </form>\
+        <h2>Attendance Status</h2>\
+        <a href='/status'>View Attendance List</a>\
+    </body>\
+</html>";
+
+
+// Check authentication
+static bool is_authenticated = false;
+
+static esp_err_t login_handler(httpd_req_t *req) {
+    char content[100];
+    int ret = httpd_req_recv(req, content, sizeof(content));
+    if (ret > 0) {
+        content[ret] = '\0';
+        if (strstr(content, "username=admin") && strstr(content, "password=esp32pass")) {
+            is_authenticated = true;
+            httpd_resp_set_hdr(req, "Location", "/control");
+            httpd_resp_send(req, NULL, 0);
+            return ESP_OK;
+        }
+    }
+    is_authenticated = false;
+    httpd_resp_send(req, login_page, strlen(login_page));
+    return ESP_OK;
+}
+static esp_err_t control_handler(httpd_req_t *req) {
+    if (!is_authenticated) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+    httpd_resp_send(req, attendance_page, strlen(attendance_page));
+    return ESP_OK;
+}
+
+static esp_err_t mark_attendance_handler(httpd_req_t *req) {
+    char buf[100];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1); // Leave space for null-terminator
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    // Extract name from request
+    char name[50];
+    if (sscanf(buf, "name=%49s", name) != 1) {
+        httpd_resp_send(req, "Invalid Input", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    // Store in NVS
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("attendance", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs_handle, name, "present");
+        if (err == ESP_OK) {
+            nvs_commit(nvs_handle);
+            ESP_LOGI(TAG, "Marked attendance for %s", name);
+            httpd_resp_send(req, "Attendance Marked!", HTTPD_RESP_USE_STRLEN);
+        } else {
+            ESP_LOGE(TAG, "Failed to set value in NVS");
+            httpd_resp_send_500(req);
+        }
+        nvs_close(nvs_handle);
+    } else {
+        ESP_LOGE(TAG, "Failed to open NVS");
+        httpd_resp_send_500(req);
+    }
+    return ESP_OK;
+}
+
+
+
+
+static void start_webserver(void) {
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t server = NULL;
+    httpd_start(&server, &config);
+
+    httpd_uri_t login_uri = {
+        .uri       = "/",
+        .method    = HTTP_GET,
+        .handler   = control_handler
+    };
+    httpd_register_uri_handler(server, &login_uri);
+
+    httpd_uri_t post_login_uri = {
+        .uri       = "/login",
+        .method    = HTTP_POST,
+        .handler   = login_handler
+    };
+    httpd_register_uri_handler(server, &post_login_uri);
+
+    httpd_uri_t mark_attendance = {
+        .uri       = "/mark",
+        .method    = HTTP_POST,
+        .handler   = mark_attendance_handler
+    };
+    httpd_register_uri_handler(server, &mark_attendance);
+}
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                                    int32_t event_id, void* event_data)
+{
+    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
+        ESP_LOGI(TAG, "station "MACSTR" join, AID=%d",
+                 MAC2STR(event->mac), event->aid);
+    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
+        ESP_LOGI(TAG, "station "MACSTR" leave, AID=%d, reason=%d",
+                 MAC2STR(event->mac), event->aid, event->reason);
+    }
+}
+
+void wifi_init_softap(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        NULL));
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = EXAMPLE_ESP_WIFI_SSID,
+            .ssid_len = strlen(EXAMPLE_ESP_WIFI_SSID),
+            .channel = EXAMPLE_ESP_WIFI_CHANNEL,
+            .password = EXAMPLE_ESP_WIFI_PASS,
+            .max_connection = EXAMPLE_MAX_STA_CONN,
+#ifdef CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT
+            .authmode = WIFI_AUTH_WPA3_PSK,
+            .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
+#else /* CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT */
+            .authmode = WIFI_AUTH_WPA2_PSK,
+#endif
+            .pmf_cfg = {
+                    .required = true,
+            },
+        },
+    };
+    if (strlen(EXAMPLE_ESP_WIFI_PASS) == 0) {
+        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "wifi_init_softap finished. SSID:%s password:%s channel:%d",
+             EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS, EXAMPLE_ESP_WIFI_CHANNEL);
+}
+
+void app_main(void)
+{ 
+    //Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
+    wifi_init_softap();
+}
