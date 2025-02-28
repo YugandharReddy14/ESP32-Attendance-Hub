@@ -1,11 +1,3 @@
-/*  WiFi softAP Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,11 +13,6 @@
 #include "lwip/err.h"
 #include "lwip/sys.h"
 
-/* The examples use WiFi configuration that you can set via project configuration menu.
-
-   If you'd rather not, just change the below entries to strings with
-   the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
-*/
 #define EXAMPLE_ESP_WIFI_SSID      CONFIG_ESP_WIFI_SSID
 #define EXAMPLE_ESP_WIFI_PASS      CONFIG_ESP_WIFI_PASSWORD
 #define EXAMPLE_ESP_WIFI_CHANNEL   CONFIG_ESP_WIFI_CHANNEL
@@ -34,8 +21,8 @@
 static const char *TAG = "wifi softAP";
 
 // Username and Password for authentication
-#define USERNAME  "admin"
-#define PASSWORD  "esp32pass"
+#define USERNAME  "Yugandhar"
+#define PASSWORD  "Yuga@1412"
 
 
 #define STORAGE_NAMESPACE "attendance"
@@ -75,7 +62,7 @@ static esp_err_t login_handler(httpd_req_t *req) {
     int ret = httpd_req_recv(req, content, sizeof(content));
     if (ret > 0) {
         content[ret] = '\0';
-        if (strstr(content, "username=admin") && strstr(content, "password=esp32pass")) {
+        if (strstr(content, "username=Yugandhar") && strstr(content, "password=Yuga@1412")) {
             is_authenticated = true;
             httpd_resp_set_hdr(req, "Location", "/control");
             httpd_resp_send(req, NULL, 0);
@@ -133,9 +120,6 @@ static esp_err_t mark_attendance_handler(httpd_req_t *req) {
     }
     return ESP_OK;
 }
-
-
-
 
 static void start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -236,3 +220,4 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
     wifi_init_softap();
 }
+
